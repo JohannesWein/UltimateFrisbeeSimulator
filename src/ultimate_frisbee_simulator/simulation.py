@@ -63,6 +63,7 @@ def simulate_flight(
     initial_state: FlightInitialState,
     environment: FlightEnvironment = FlightEnvironment(),
     settings: SolverSettings = SolverSettings(),
+    sample_times_s: tuple[float, ...] = (),
 ) -> FlightTrajectory:
     """Integrate a disc's coupled translational and rotational motion.
 
@@ -124,6 +125,19 @@ def simulate_flight(
     ground_contact.terminal = True
     ground_contact.direction = -1
 
+    requested_sample_times = tuple(float(time_s) for time_s in sample_times_s)
+    if any(
+        not math.isfinite(time_s)
+        or time_s < 0
+        or time_s > settings.maximum_duration_s
+        for time_s in requested_sample_times
+    ):
+        raise ValueError(
+            "sample_times_s must be finite and within the configured flight duration"
+        )
+    if len(set(requested_sample_times)) != len(requested_sample_times):
+        raise ValueError("sample_times_s must not contain duplicate times")
+
     solution = solve_ivp(
         derivative,
         (0.0, settings.maximum_duration_s),
@@ -133,6 +147,7 @@ def simulate_flight(
         atol=settings.absolute_tolerance,
         max_step=settings.maximum_step_s,
         events=ground_contact,
+        dense_output=bool(requested_sample_times),
     )
     if not solution.success:
         raise RuntimeError(f"flight integration failed: {solution.message}")
@@ -144,9 +159,9 @@ def simulate_flight(
         if solution.t_events[0].size
         else FlightTerminationReason.MAXIMUM_DURATION
     )
-    samples = tuple(
-        TrajectorySample(
-            elapsed_s=float(time_s),
+    def to_sample(time_s: float, state: np.ndarray) -> TrajectorySample:
+        return TrajectorySample(
+            elapsed_s=time_s,
             position_m=tuple(float(value) for value in state[0:3]),
             velocity_m_s=tuple(float(value) for value in state[3:6]),
             orientation_wxyz=tuple(
@@ -154,6 +169,20 @@ def simulate_flight(
             ),
             angular_velocity_body_rad_s=tuple(float(value) for value in state[10:13]),
         )
+
+    samples_by_time = {
+        float(time_s): to_sample(float(time_s), state)
         for time_s, state in zip(solution.t, solution.y.T)
+    }
+    flight_end_s = (
+        float(solution.t_events[0][0])
+        if termination_reason is FlightTerminationReason.GROUND_CONTACT
+        else settings.maximum_duration_s
     )
+    if solution.sol is not None:
+        for time_s in requested_sample_times:
+            if time_s <= flight_end_s:
+                samples_by_time[time_s] = to_sample(time_s, solution.sol(time_s))
+
+    samples = tuple(samples_by_time[time_s] for time_s in sorted(samples_by_time))
     return FlightTrajectory(samples, termination_reason)

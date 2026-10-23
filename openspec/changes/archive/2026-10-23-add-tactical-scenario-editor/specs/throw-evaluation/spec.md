@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Lets a tactical scenario describe an intended pass separately from imperfect throw execution. It estimates flight-level catchability over varied physical throws while preserving a nominal target and catch time for play design.
+Lets a tactical scenario plan a pass with an automatically determined catch time or an explicitly requested timing constraint, separately from imperfect throw execution. It estimates flight-level catchability over varied physical throws while preserving the resolved nominal target and catch time for play design.
 
 ## ADDED Requirements
 
@@ -14,9 +14,33 @@ The system SHALL provide a top-down view of the configured field where a user ca
 - **THEN** the scenario stores both locations in field coordinates measured in metres
 - **AND** the view displays the planned pass between them
 
-#### Scenario: Set the nominal catch time
-- **WHEN** a user edits the nominal catch time for a planned pass
+#### Scenario: Set the nominal catch time for a timing pass
+- **WHEN** a user selects timing-pass mode and edits the nominal catch time for a planned pass
 - **THEN** the displayed and evaluated pass plan uses that time without changing the intended receiver location
+
+### Requirement: Plan a pass without prescribing its catch time
+The system SHALL default to target-only planning, where the user supplies the throw origin, intended receiver location, and throw profile, and the system searches for a nominal release and catch time within configurable positive time bounds.
+
+#### Scenario: Resolve a target-only pass
+- **WHEN** a target-only search finds one or more verified nominal releases within its configured search bounds and budget
+- **THEN** the system selects the earliest verified catch time among the candidates it examined
+- **AND** the simulated position at that exact time is within the configured target tolerance without prior ground contact
+- **AND** the view displays the derived nominal catch time rather than requiring a time input
+- **AND** identical inputs and search settings produce the same selected plan
+
+#### Scenario: Preserve optional timing-pass behavior
+- **WHEN** a user selects timing-pass mode and supplies a positive nominal catch time
+- **THEN** the system searches for a release at that time without substituting an automatically selected catch time
+
+#### Scenario: Report an unresolved target-only pass
+- **WHEN** the bounded target-only search finds no verified nominal release
+- **THEN** the system reports that no suitable release was found within the search bounds and budget
+- **AND** it does not present the failed search as proof that the pass is physically impossible
+- **AND** it does not evaluate execution variation around an unresolved plan
+
+#### Scenario: Reject invalid automatic timing settings
+- **WHEN** automatic timing bounds are non-finite, non-positive, or reversed, or the search budget is invalid
+- **THEN** the system reports an explicit validation error
 
 ### Requirement: Find a feasible nominal release
 The system SHALL find a nominal launch state whose simulated flight reaches the planned receiver location at the nominal catch time, subject to the selected throw profile's release constraints.
@@ -29,11 +53,16 @@ The system SHALL find a nominal launch state whose simulated flight reaches the 
 - **WHEN** no launch state within the selected throw profile's release constraints reaches the target at the nominal catch time
 - **THEN** the system reports that no feasible nominal throw was found rather than presenting an unsolved trajectory as a valid plan
 
+#### Scenario: Describe a failed candidate accurately
+- **WHEN** the nominal-release search ends with a candidate that contacts the ground before the requested catch time
+- **THEN** the result identifies early ground contact as a property of the failed candidate
+- **AND** the view states that no suitable release was found rather than asserting that all possible releases land too early
+
 ### Requirement: Preserve the nominal planned pass
-The system SHALL represent a planned pass with its intended receiver location and nominal catch time independently of any sampled throw execution.
+The system SHALL represent a resolved planned pass with its intended receiver location and nominal catch time independently of any sampled throw execution. The catch time SHALL be derived by target-only planning or supplied by timing-pass planning.
 
 #### Scenario: Create a planned pass
-- **WHEN** a user defines a pass in a tactical scenario
+- **WHEN** target-only planning resolves a pass or a user defines a timing pass in a tactical scenario
 - **THEN** the plan retains its intended receiver location and nominal catch time as the stable tactical target
 - **AND** evaluating or executing the pass does not overwrite those planned values
 

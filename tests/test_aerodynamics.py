@@ -41,6 +41,37 @@ def disc_with_coefficients(model):
 
 
 class AerodynamicTests(unittest.TestCase):
+    def test_world_loads_are_spin_phase_invariant(self):
+        for disc in (
+            discraft_ultra_star(),
+            disc_with_coefficients(coefficient_model(
+                lift=0.5, drag=0.2, side=0.1, roll=0.02, pitch=-0.03, yaw=0.01,
+            )),
+        ):
+            for tilt in (0.0, 0.3):
+                for wind in ((0.0, 0.0, 0.0), (2.0, -3.0, 1.0)):
+                    reference = None
+                    for phase in (0, 45, 90, 180, 270):
+                        half = math.radians(phase) / 2
+                        q = (
+                            math.cos(tilt / 2) * math.cos(half),
+                            math.sin(tilt / 2) * math.sin(half),
+                            math.sin(tilt / 2) * math.cos(half),
+                            math.cos(tilt / 2) * math.sin(half),
+                        )
+                        wrench = evaluate_aerodynamics(
+                            disc, (18.0, 0.0, 0.0), q, wind, 1.225,
+                        )
+                        loads = (
+                            rotate_body_to_world(q, wrench.force_body_n),
+                            rotate_body_to_world(q, wrench.moment_body_nm),
+                        )
+                        if reference is None:
+                            reference = loads
+                        with self.subTest(tilt=tilt, wind=wind, phase=phase):
+                            for actual, expected in zip(loads, reference):
+                                self.assertLessEqual(math.dist(actual, expected), 1e-9)
+
     def test_coefficient_surface_bilinearly_interpolates_and_clamps(self):
         surface = CoefficientSurface(
             angle_of_attack_rad=(0.0, 1.0),
@@ -83,7 +114,7 @@ class AerodynamicTests(unittest.TestCase):
         self.assertGreater(wrench.force_body_n[2], 0.0)
         self.assertAlmostEqual(wrench.force_body_n[1], 0.0)
 
-    def test_side_force_opposes_positive_sideslip(self):
+    def test_side_force_uses_flow_transverse_axis_at_zero_sideslip(self):
         disc = disc_with_coefficients(coefficient_model(side=-1.0))
 
         wrench = evaluate_aerodynamics(
@@ -94,8 +125,63 @@ class AerodynamicTests(unittest.TestCase):
             air_density_kg_m3=1.225,
         )
 
-        self.assertGreater(wrench.sideslip_rad, 0.0)
+        self.assertEqual(wrench.sideslip_rad, 0.0)
         self.assertLess(wrench.force_body_n[1], 0.0)
+        self.assertAlmostEqual(
+            sum(a * b for a, b in zip(wrench.force_body_n, (10.0, 2.0, 0.0))), 0.0,
+        )
+
+    def test_attack_sign_and_lift_drag_geometry(self):
+        for tilt in (-0.2, 0.2):
+            q = (math.cos(tilt / 2), 0.0, math.sin(tilt / 2), 0.0)
+            wrench = evaluate_aerodynamics(
+                discraft_ultra_star(), (10.0, 0.0, 0.0), q, (0.0, 0.0, 0.0), 1.225,
+            )
+            self.assertAlmostEqual(wrench.angle_of_attack_rad, -tilt)
+        velocity = (10.0, 3.0, 2.0)
+        for channel in ("lift", "drag"):
+            wrench = evaluate_aerodynamics(
+                disc_with_coefficients(coefficient_model(**{channel: 1.0})),
+                velocity, (1.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 1.225,
+            )
+            force = wrench.force_body_n
+            if channel == "lift":
+                self.assertAlmostEqual(sum(a*b for a,b in zip(force, velocity)), 0.0)
+                self.assertGreater(force[2], 0.0)
+            else:
+                ratios = [a/b for a,b in zip(force, velocity)]
+                self.assertLess(ratios[0], 0.0)
+                self.assertAlmostEqual(ratios[0], ratios[1])
+                self.assertAlmostEqual(ratios[0], ratios[2])
+
+    def test_normal_flow_is_finite_and_phase_independent(self):
+        disc = disc_with_coefficients(coefficient_model(
+            lift=1.0, drag=1.0, side=1.0, roll=1.0, pitch=1.0, yaw=1.0,
+        ))
+        for sign in (-1, 1):
+            for ratio in (0.0, 0.5e-12, 2e-12):
+                reference = None
+                for phase in (0, 45, 90, 180, 270):
+                    half = math.radians(phase)/2
+                    q = (math.cos(half), 0.0, 0.0, math.sin(half))
+                    wrench = evaluate_aerodynamics(
+                        disc, (10*ratio, 0.0, sign*10.0), q,
+                        (0.0, 0.0, 0.0), 1.225,
+                    )
+                    values = (*wrench.force_body_n, *wrench.moment_body_nm,
+                              wrench.angle_of_attack_rad, wrench.sideslip_rad)
+                    self.assertTrue(all(math.isfinite(value) for value in values))
+                    loads = (
+                        rotate_body_to_world(q, wrench.force_body_n),
+                        rotate_body_to_world(q, wrench.moment_body_nm),
+                    )
+                    if reference is None:
+                        reference = loads
+                    for actual, expected in zip(loads, reference):
+                        self.assertLessEqual(math.dist(actual, expected), 1e-9)
+                    if ratio < 1e-12:
+                        self.assertEqual(wrench.force_body_n[:2], (0.0, 0.0))
+                        self.assertEqual(wrench.moment_body_nm[:2], (0.0, 0.0))
 
     def test_positive_moment_coefficients_follow_body_axis_order(self):
         disc = disc_with_coefficients(

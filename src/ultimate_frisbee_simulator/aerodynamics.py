@@ -83,7 +83,11 @@ class CoefficientSurface:
 
 @dataclass(frozen=True)
 class AerodynamicCoefficientModel:
-    """Six coefficient surfaces and their provenance."""
+    """Flow-frame coefficients and provenance for an axisymmetric disc.
+
+    Flight evaluation uses zero sideslip; roll/pitch/yaw refer to the
+    in-plane flow direction, transverse direction, and disc normal.
+    """
 
     lift: CoefficientSurface
     drag: CoefficientSurface
@@ -186,9 +190,9 @@ def evaluate_aerodynamics(
 ) -> AerodynamicWrench:
     """Evaluate forces and moments from wind-relative flow in the disc frame.
 
-    Body x is the disc's forward direction, body y its span direction, and
-    body z its normal. Lift is perpendicular to the flow and span; moments are
-    returned around the body x, y, and z axes respectively.
+    Body z is the disc normal. Coefficients use a flow-aligned in-plane frame,
+    zero sideslip, and positive nose-up angle of attack. Output vectors remain
+    body-frame vectors, independent in world space of material spin phase.
     """
     if len(velocity_world_m_s) != 3 or len(wind_velocity_m_s) != 3:
         raise ValueError("velocity and wind vectors must have three components")
@@ -205,8 +209,9 @@ def evaluate_aerodynamics(
     if speed == 0:
         return AerodynamicWrench((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), relative_body, 0.0, 0.0)
 
-    angle_of_attack = math.atan2(normal, math.hypot(forward, spanwise))
-    sideslip = math.atan2(spanwise, math.hypot(forward, normal))
+    in_plane_speed = math.hypot(forward, spanwise)
+    angle_of_attack = math.atan2(-normal, in_plane_speed)
+    sideslip = 0.0
     dynamic_pressure = 0.5 * density * speed**2
     area = disc.reference_area_m2
     coefficients = disc.aerodynamic_coefficients
@@ -216,35 +221,42 @@ def evaluate_aerodynamics(
     )
     drag = tuple(-drag_scale * component / speed for component in relative_body)
 
-    lift_norm = math.hypot(forward, normal)
-    if lift_norm == 0:
-        lift = (0.0, 0.0, 0.0)
-    else:
-        lift_scale = dynamic_pressure * area * coefficients.lift.evaluate(
-            angle_of_attack, sideslip
+    moment_scale = dynamic_pressure * area * disc.diameter_m
+    yaw = moment_scale * coefficients.yaw_moment.evaluate(angle_of_attack, sideslip)
+    if in_plane_speed <= 1e-12 * speed:
+        return AerodynamicWrench(
+            force_body_n=(0.0, 0.0, drag[2]),
+            moment_body_nm=(0.0, 0.0, yaw),
+            relative_air_velocity_body_m_s=relative_body,
+            angle_of_attack_rad=angle_of_attack,
+            sideslip_rad=sideslip,
         )
-        lift = (
-            -normal * lift_scale / lift_norm,
-            0.0,
-            forward * lift_scale / lift_norm,
-        )
+
+    flow_x = forward / in_plane_speed
+    flow_y = spanwise / in_plane_speed
+    lift_scale = dynamic_pressure * area * coefficients.lift.evaluate(
+        angle_of_attack, sideslip
+    )
+    lift = (
+        -normal / speed * flow_x * lift_scale,
+        -normal / speed * flow_y * lift_scale,
+        in_plane_speed / speed * lift_scale,
+    )
 
     side_scale = dynamic_pressure * area * coefficients.side_force.evaluate(
         angle_of_attack, sideslip
     )
     force = (
-        drag[0] + lift[0],
-        drag[1] + side_scale,
+        drag[0] + lift[0] - flow_y * side_scale,
+        drag[1] + lift[1] + flow_x * side_scale,
         drag[2] + lift[2],
     )
-    moment_scale = dynamic_pressure * area * disc.diameter_m
-    moments = tuple(
-        moment_scale * surface.evaluate(angle_of_attack, sideslip)
-        for surface in (
-            coefficients.roll_moment,
-            coefficients.pitch_moment,
-            coefficients.yaw_moment,
-        )
+    roll = moment_scale * coefficients.roll_moment.evaluate(angle_of_attack, sideslip)
+    pitch = moment_scale * coefficients.pitch_moment.evaluate(angle_of_attack, sideslip)
+    moments = (
+        flow_x * roll - flow_y * pitch,
+        flow_y * roll + flow_x * pitch,
+        yaw,
     )
     return AerodynamicWrench(
         force_body_n=force,
